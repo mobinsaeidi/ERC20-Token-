@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+
+// Importing OpenZeppelin contracts for standard functionality and security
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+// ProfessionalToken contract inheriting ERC20, Ownable, Pausable, and ReentrancyGuard features
+contract ProfessionalToken is ERC20, Ownable, Pausable, ReentrancyGuard {
+    // Token supply constants
+    uint256 public constant MAX_SUPPLY = 1000000000 * 10**18; // Maximum supply: 1 billion tokens with 18 decimals
+    uint256 public constant INITIAL_SUPPLY = 100000000 * 10**18; // Initial supply: 100 million tokens minted at deployment
+    uint256 public constant MINT_AMOUNT = 1000000 * 10**18; // Fixed mint amount: 1 million tokens (not enforced in mint function)
+
+    // Struct to define a vesting schedule for beneficiaries
+    struct VestingSchedule {
+        uint256 startTime;        // Timestamp when vesting begins
+        uint256 cliffDuration;    // Duration (in seconds) before any tokens can be released
+        uint256 duration;         // Total duration (in seconds) of the vesting period
+        uint256 totalAmount;      // Total tokens allocated for vesting
+        uint256 releasedAmount;   // Tokens already released to the beneficiary
+        bool revoked;             // Flag indicating if the vesting schedule is revoked
+    }
+
+    // Mappings to track vesting schedules and beneficiaries
+    mapping(address => VestingSchedule) public vestingSchedules; // Stores vesting details for each beneficiary
+    mapping(address => bool) public isVestingSchedule;           // Tracks if an address has a vesting schedule
+
+    // Events for transparency and off-chain tracking
+    event VestingScheduleCreated(address indexed beneficiary, uint256 startTime, uint256 amount); // Emitted when a vesting schedule is created
+    event VestingScheduleRevoked(address indexed beneficiary);                                   // Emitted when a vesting schedule is revoked
+    event TokensMinted(address indexed to, uint256 amount);                                      // Emitted when new tokens are minted
+    event TokensBurned(address indexed from, uint256 amount);                                    // Emitted when tokens are burned
+
+    // Constructor to initialize the token with a name, symbol, and initial supply
+    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
+        _mint(msg.sender, INITIAL_SUPPLY); // Mint initial supply to the deployer (owner)
+    }
+
+    /**
+     * @dev Creates a vesting schedule for a beneficiary (only callable by owner)
+     * @param beneficiary Address receiving the vested tokens
+     * @param startTime Timestamp when vesting starts
+     * @param cliffDuration Seconds before any tokens can be released
+     * @param duration Total seconds for the vesting period
+     * @param amount Total tokens to vest
+     */
+    function createVestingSchedule(
+        address beneficiary,
+        uint256 startTime,
+        uint256 cliffDuration,
+        uint256 duration,
+        uint256 amount
+    ) external onlyOwner whenNotPaused {
+        require(beneficiary != address(0), "Invalid beneficiary address");           // Ensure beneficiary is not zero address
+        require(!isVestingSchedule[beneficiary], "Vesting schedule already exists"); // Prevent duplicate schedules
+        require(amount > 0, "Amount must be greater than 0");                        // Ensure a positive amount
+        require(duration > 0, "Duration must be greater than 0");                    // Ensure vesting period is valid
+        require(duration >= cliffDuration, "Duration must be greater than or equal to cliff duration"); // Validate cliff vs duration
+
+        // Create and store the vesting schedule
+        vestingSchedules[beneficiary] = VestingSchedule({
+            startTime: startTime,
+            cliffDuration: cliffDuration,
+            duration: duration,
+            totalAmount: amount,
+            releasedAmount: 0,
+            revoked: false
+        });
+
+        isVestingSchedule[beneficiary] = true; // Mark the address as having a vesting schedule
+        emit VestingScheduleCreated(beneficiary, startTime, amount); // Emit event for transparency
+    }
+
+    /**
+     * @dev Releases vested tokens to the beneficiary
+     * @param beneficiary Address to release tokens to
+     */
+    function releaseVestedTokens(address beneficiary) external nonReentrant whenNotPaused {
+        require(isVestingSchedule[beneficiary], "No vesting schedule exists"); // Ensure a schedule exists
+        VestingSchedule storage schedule = vestingSchedules[beneficiary];      // Get the vesting schedule
+        require(!schedule.revoked, "Vesting schedule has been revoked");       // Check if schedule is still active
+
+        uint256 releasableAmount = _calculateReleasableAmount(schedule);       // Calculate tokens available for release
+        require(releasableAmount > 0, "No tokens are available for release");  // Ensure there are tokens to release
+
+        schedule.releasedAmount += releasableAmount;                           // Update released amount
+        _transfer(address(this), beneficiary, releasableAmount);               // Transfer tokens from contract to beneficiary
+    }
+
+    /**
+     * @dev Revokes a vesting schedule and returns unreleased tokens to the owner
+     * @param beneficiary Address of the vesting schedule to revoke
+     */
+    function revokeVestingSchedule(address beneficiary) external onlyOwner {
+        require(isVestingSchedule[beneficiary], "No vesting schedule exists"); // Ensure a schedule exists
+        VestingSchedule storage schedule = vestingSchedules[beneficiary];      // Get the vesting schedule
+        require(!schedule.revoked, "Vesting schedule already revoked");        // Check if not already revoked
+
+        uint256 unreleasedAmount = schedule.totalAmount - schedule.releasedAmount; // Calculate unreleased tokens
+        schedule.revoked = true;                                                   // Mark schedule as revoked
+
+        if (unreleasedAmount > 0) {
+            _transfer(address(this), owner(), unreleasedAmount);                   // Transfer unreleased tokens to owner
+        }
+
+        emit VestingScheduleRevoked(beneficiary);                                  // Emit event for transparency
+    }
+
+    /**
+     * @dev Mints new tokens to a specified address (only callable by owner)
+     * @param to Address receiving the newly minted tokens
+     * @param amount Amount of tokens to mint
+     */
+    function mint(address to, uint256 amount) external onlyOwner whenNotPaused {
+        require(to != address(0), "Invalid recipient address");                // Ensure recipient is not zero address
+        require(amount > 0, "Amount must be greater than 0");                  // Ensure a positive amount
+        require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds maximum supply"); // Check against max supply
+
+        _mint(to, amount);                                                     // Mint the tokens
+        emit TokensMinted(to, amount);                                         // Emit event for transparency
+    }
+
+    /**
+     * @dev Burns tokens from the caller's balance
+     * @param amount Amount of tokens to burn
+     */
+    function burn(uint256 amount) external whenNotPaused {
+        require(amount > 0, "Amount must be greater than 0");                  // Ensure a positive amount
+        require(balanceOf(msg.sender) >= amount, "Insufficient balance");      // Check caller's balance
+
+        _burn(msg.sender, amount);                                             // Burn the tokens
+        emit TokensBurned(msg.sender, amount);                                 // Emit event for transparency
+    }
+
+    /**
+     * @dev Pauses all token transfers and operations (only callable by owner)
+     */
+    function pause() external onlyOwner {
+        _pause();                                                              // Trigger pause state from Pausable
+    }
+
+    /**
+     * @dev Unpauses token transfers and operations (only callable by owner)
+     */
+    function unpause() external onlyOwner {
+        _unpause();                                                            // Trigger unpause state from Pausable
+    }
+
+    /**
+     * @dev Internal function to calculate the amount of tokens releasable from a vesting schedule
+     * @param schedule The vesting schedule to calculate for
+     * @return The amount of tokens that can be released
+     */
+    function _calculateReleasableAmount(VestingSchedule storage schedule) internal view returns (uint256) {
+        if (block.timestamp < schedule.startTime + schedule.cliffDuration) {   // Before cliff period ends
+            return 0;                                                          // No tokens releasable
+        }
+
+        if (block.timestamp >= schedule.startTime + schedule.duration) {       // After full vesting period
+            return schedule.totalAmount - schedule.releasedAmount;             // Release all remaining tokens
+        }
+
+        // Calculate linearly vested amount based on time elapsed
+        uint256 timeFromStart = block.timestamp - schedule.startTime;
+        uint256 vestedAmount = (schedule.totalAmount * timeFromStart) / schedule.duration;
+        return vestedAmount - schedule.releasedAmount;                         // Return unreleased vested amount
+    }
+
+    /**
+     * @dev Overrides ERC20's transfer function to enforce pause functionality
+     * @param from Sender address
+     * @param to Receiver address
+     * @param amount Amount of tokens to transfer
+     */
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual override whenNotPaused {
+        super._transfer(from, to, amount);                                     // Call parent transfer function with pause check
+    }
+}
