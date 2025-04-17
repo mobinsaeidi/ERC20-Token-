@@ -12,7 +12,8 @@ Ownership: Restricted functions for the contract owner (e.g., vesting management
 Prerequisites
 To deploy and interact with this contract, you'll need:
 
-Solidity ^0.8.26
+Solidity ^0.8.29
+
 OpenZeppelin Contracts (version compatible with Solidity ^0.8.26)
 Ethereum Development Environment (e.g., Hardhat, Truffle, or Remix)
 MetaMask or another Ethereum wallet
