@@ -9,7 +9,7 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 // ProfessionalToken contract inheriting ERC20, Ownable, Pausable, and ReentrancyGuard features
 contract ProfessionalToken is ERC20, Ownable, Pausable, ReentrancyGuard {
-    // Token supply constants
+    / Token supply constants
     uint256 public constant MAX_SUPPLY = 1000000000 * 10**18; // Maximum supply: 1 billion tokens with 18 decimals
     uint256 public constant INITIAL_SUPPLY = 100000000 * 10**18; // Initial supply: 100 million tokens minted at deployment
     uint256 public constant MINT_AMOUNT = 1000000 * 10**18; // Fixed mint amount: 1 million tokens (not enforced in mint function)
